@@ -1116,6 +1116,7 @@ async fn cli_main(
             )?;
             match subcommand {
                 None => {
+                    append_app_server_oss_override(&interactive, &mut root_config_overrides)?;
                     let transport = if stdio {
                         codex_app_server::AppServerTransport::Stdio
                     } else {
@@ -1672,6 +1673,29 @@ fn profile_v2_for_subcommand<'a>(
             "--profile only applies to runtime commands and `codex mcp`: `codex`, `codex exec`, `codex review`, `codex resume`, `codex archive`, `codex delete`, `codex unarchive`, `codex fork`, `codex mcp`, `codex sandbox`, and `codex debug prompt-input`."
         ),
     }
+}
+
+/// App-server uses the shared interactive CLI flags for backwards-compatible
+/// parsing, but starts its own configuration loader. Carry the explicit OSS
+/// provider into that loader so `codex --oss --local-provider ollama
+/// app-server` selects the same provider as `codex exec`.
+fn append_app_server_oss_override(
+    interactive: &TuiCli,
+    config_overrides: &mut CliConfigOverrides,
+) -> anyhow::Result<()> {
+    if !interactive.oss {
+        return Ok(());
+    }
+
+    let provider = interactive.oss_provider.as_deref().ok_or_else(|| {
+        anyhow::anyhow!(
+            "`codex app-server --oss` requires --local-provider until config-based OSS provider resolution is implemented"
+        )
+    })?;
+    config_overrides
+        .raw_overrides
+        .push(format!("model_provider = {provider:?}"));
+    Ok(())
 }
 
 async fn run_exec_server_command(
@@ -2500,6 +2524,31 @@ mod tests {
     use codex_protocol::ThreadId;
     use codex_tui::TokenUsage;
     use pretty_assertions::assert_eq;
+
+    #[test]
+    fn app_server_oss_local_provider_becomes_model_provider_override() {
+        let cli = MultitoolCli::try_parse_from([
+            "codex",
+            "--oss",
+            "--local-provider",
+            "ollama",
+            "app-server",
+        ])
+        .expect("parse app-server OSS flags");
+        let MultitoolCli {
+            interactive,
+            mut config_overrides,
+            ..
+        } = cli;
+
+        append_app_server_oss_override(&interactive, &mut config_overrides)
+            .expect("translate explicit OSS provider");
+
+        assert_eq!(
+            config_overrides.raw_overrides,
+            vec![r#"model_provider = "ollama""#.to_string()]
+        );
+    }
 
     #[test]
     fn exec_server_remote_auth_accepts_api_key_auth() {
