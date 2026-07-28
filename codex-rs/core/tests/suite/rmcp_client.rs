@@ -537,6 +537,91 @@ fn assert_cwd_tool_output(structured: &Value, expected_cwd: &Path) {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 #[serial(mcp_test_value)]
+async fn non_openai_provider_flattens_and_dispatches_mcp_tool() -> anyhow::Result<()> {
+    skip_if_wine_exec!(
+        Ok(()),
+        "requires a Windows test_stdio_server in the Wine-exec environment"
+    );
+    skip_if_no_network!(Ok(()));
+
+    let server = responses::start_mock_server().await;
+    let call_id = "call-flat-rmcp";
+    let server_name = "rmcp";
+    let first_mock = mount_sse_once(
+        &server,
+        responses::sse(vec![
+            responses::ev_response_created("resp-1"),
+            responses::ev_function_call(call_id, "mcp__rmcp__echo", "{\"message\":\"ping\"}"),
+            responses::ev_completed("resp-1"),
+        ]),
+    )
+    .await;
+    mount_sse_once(
+        &server,
+        responses::sse(vec![
+            responses::ev_assistant_message("msg-1", "flat rmcp call completed"),
+            responses::ev_completed("resp-2"),
+        ]),
+    )
+    .await;
+
+    let rmcp_test_server_bin = remote_aware_stdio_server_bin()?;
+    let fixture = test_codex()
+        .with_config(move |config| {
+            config.model_provider.requires_openai_auth = false;
+            insert_mcp_server(
+                config,
+                server_name,
+                stdio_transport(rmcp_test_server_bin, /*env*/ None, Vec::new()),
+                TestMcpServerOptions {
+                    environment_id: remote_aware_environment_id(),
+                    ..Default::default()
+                },
+            );
+        })
+        .build_with_auto_env(&server)
+        .await?;
+    wait_for_mcp_server(&fixture.codex, server_name).await?;
+
+    fixture
+        .codex
+        .submit(read_only_user_turn(&fixture, "call the rmcp echo tool"))
+        .await?;
+
+    let end_event = wait_for_event(&fixture.codex, |ev| {
+        matches!(ev, EventMsg::McpToolCallEnd(_))
+    })
+    .await;
+    let EventMsg::McpToolCallEnd(end) = end_event else {
+        unreachable!("event guard guarantees McpToolCallEnd");
+    };
+    assert!(end.result.is_ok(), "flat MCP call should dispatch: {end:?}");
+    wait_for_event(&fixture.codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
+
+    let request = first_mock.single_request();
+    let tools = request.body_json()["tools"]
+        .as_array()
+        .expect("request tools should be an array")
+        .clone();
+    assert!(
+        tools.iter().any(|tool| {
+            tool.get("type").and_then(Value::as_str) == Some("function")
+                && tool.get("name").and_then(Value::as_str) == Some("mcp__rmcp__echo")
+        }),
+        "expected a flat MCP function in {tools:?}"
+    );
+    assert!(
+        tools
+            .iter()
+            .all(|tool| tool.get("type").and_then(Value::as_str) != Some("namespace")),
+        "non-OpenAI provider should not receive namespace wrappers: {tools:?}"
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+#[serial(mcp_test_value)]
 async fn stdio_server_round_trip() -> anyhow::Result<()> {
     // TODO(anp): Remove after packaging a Windows stdio test server for Wine exec.
     skip_if_wine_exec!(

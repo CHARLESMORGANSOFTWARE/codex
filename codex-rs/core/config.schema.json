@@ -1669,6 +1669,11 @@
           "description": "Friendly display name.",
           "type": "string"
         },
+        "namespace_tools": {
+          "default": null,
+          "description": "Whether this provider understands Codex's `type: \"namespace\"` tool wrapper. When false, namespaced tools are flattened to plain `<namespace>__<tool>` functions. When unset, the runtime selects a provider-appropriate default.",
+          "type": "boolean"
+        },
         "query_params": {
           "additionalProperties": {
             "type": "string"

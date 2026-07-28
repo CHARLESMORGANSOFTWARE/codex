@@ -29,10 +29,25 @@ base_url = "http://localhost:11434/v1"
         websocket_connect_timeout_ms: None,
         requires_openai_auth: false,
         supports_websockets: false,
+        namespace_tools: None,
     };
 
     let provider: ModelProviderInfo = toml::from_str(azure_provider_toml).unwrap();
     assert_eq!(expected_provider, provider);
+}
+
+#[test]
+fn test_deserialize_namespace_tools_override() {
+    let provider: ModelProviderInfo = toml::from_str(
+        r#"
+name = "Compatible proxy"
+base_url = "http://localhost:11434/v1"
+namespace_tools = true
+        "#,
+    )
+    .unwrap();
+
+    assert_eq!(provider.namespace_tools, Some(true));
 }
 
 #[test]
@@ -63,6 +78,7 @@ query_params = { api-version = "2025-04-01-preview" }
         websocket_connect_timeout_ms: None,
         requires_openai_auth: false,
         supports_websockets: false,
+        namespace_tools: None,
     };
 
     let provider: ModelProviderInfo = toml::from_str(azure_provider_toml).unwrap();
@@ -100,6 +116,7 @@ env_http_headers = { "X-Example-Env-Header" = "EXAMPLE_ENV_VAR" }
         websocket_connect_timeout_ms: None,
         requires_openai_auth: false,
         supports_websockets: false,
+        namespace_tools: None,
     };
 
     let provider: ModelProviderInfo = toml::from_str(azure_provider_toml).unwrap();
@@ -177,6 +194,7 @@ fn test_supports_remote_compaction_for_azure_name() {
         websocket_connect_timeout_ms: None,
         requires_openai_auth: false,
         supports_websockets: false,
+        namespace_tools: None,
     };
 
     assert!(provider.supports_remote_compaction());
@@ -202,6 +220,7 @@ fn test_supports_remote_compaction_for_non_openai_non_azure_provider() {
         websocket_connect_timeout_ms: None,
         requires_openai_auth: false,
         supports_websockets: false,
+        namespace_tools: None,
     };
 
     assert!(!provider.supports_remote_compaction());
@@ -310,6 +329,7 @@ fn test_create_amazon_bedrock_provider() {
             websocket_connect_timeout_ms: None,
             requires_openai_auth: false,
             supports_websockets: false,
+            namespace_tools: None,
         }
     );
 }

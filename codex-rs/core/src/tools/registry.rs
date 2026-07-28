@@ -13,6 +13,7 @@ use crate::memory_usage::emit_metric_for_tool_read;
 use crate::sandbox_tags::permission_profile_policy_tag;
 use crate::sandbox_tags::permission_profile_sandbox_tag;
 use crate::session::turn_context::TurnContext;
+use crate::tools::canonical_flat_tool_name;
 use crate::tools::context::FunctionToolOutput;
 use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolOutput;
@@ -357,7 +358,17 @@ impl ToolRegistry {
     }
 
     fn tool(&self, name: &ToolName) -> Option<Arc<dyn CoreToolRuntime>> {
-        self.tools.get(name).map(Arc::clone)
+        if let Some(tool) = self.tools.get(name) {
+            return Some(Arc::clone(tool));
+        }
+
+        let canonical_name = canonical_flat_tool_name(name);
+        self.tools
+            .iter()
+            .find(|(registered_name, _)| {
+                canonical_flat_tool_name(registered_name) == canonical_name
+            })
+            .map(|(_, tool)| Arc::clone(tool))
     }
 
     #[cfg(test)]

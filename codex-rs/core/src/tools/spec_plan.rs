@@ -53,6 +53,7 @@ use crate::tools::handlers::multi_agents_v2::WaitAgentHandler as WaitAgentHandle
 use crate::tools::handlers::view_image_spec::ViewImageToolOptions;
 use crate::tools::hosted_spec::WebSearchToolOptions;
 use crate::tools::hosted_spec::create_web_search_tool;
+use crate::tools::join_namespaced_tool_name;
 use crate::tools::registry::CoreToolRuntime;
 use crate::tools::registry::ToolExposure;
 use crate::tools::registry::ToolRegistry;
@@ -261,14 +262,33 @@ fn build_model_visible_specs_and_registry(
     specs.extend(hosted_specs);
 
     let registry = ToolRegistry::from_tools(runtimes);
-    let model_visible_specs = merge_into_namespaces(specs)
-        .into_iter()
-        .filter(|spec| {
-            namespace_tools_enabled(turn_context) || !matches!(spec, ToolSpec::Namespace(_))
-        })
-        .collect();
+    let merged_specs = merge_into_namespaces(specs);
+    let model_visible_specs = if namespace_tools_enabled(turn_context) {
+        merged_specs
+    } else {
+        merged_specs
+            .into_iter()
+            .flat_map(|spec| match spec {
+                ToolSpec::Namespace(namespace) => flatten_namespace_spec(namespace),
+                other => vec![other],
+            })
+            .collect()
+    };
 
     (model_visible_specs, registry)
+}
+
+fn flatten_namespace_spec(namespace: codex_tools::ResponsesApiNamespace) -> Vec<ToolSpec> {
+    namespace
+        .tools
+        .into_iter()
+        .map(|tool| match tool {
+            ResponsesApiNamespaceTool::Function(mut function) => {
+                function.name = join_namespaced_tool_name(&namespace.name, &function.name);
+                ToolSpec::Function(function)
+            }
+        })
+        .collect()
 }
 
 fn spec_for_model_request(
