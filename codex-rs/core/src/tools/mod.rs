@@ -48,23 +48,6 @@ pub(crate) fn flat_tool_name(tool_name: &ToolName) -> Cow<'_, str> {
     }
 }
 
-const NAMESPACED_TOOL_NAME_DELIMITER: &str = "__";
-
-/// Joins a namespace and tool name into the canonical `<namespace>__<tool>` form.
-pub(in crate::tools) fn join_namespaced_tool_name(namespace: &str, name: &str) -> String {
-    let namespace = namespace.trim_end_matches('_');
-    let name = name.trim_start_matches('_');
-    format!("{namespace}{NAMESPACED_TOOL_NAME_DELIMITER}{name}")
-}
-
-/// Returns the canonical flat name used by providers without namespace support.
-pub(in crate::tools) fn canonical_flat_tool_name(tool_name: &ToolName) -> Cow<'_, str> {
-    match tool_name.namespace.as_deref() {
-        Some(namespace) => Cow::Owned(join_namespaced_tool_name(namespace, &tool_name.name)),
-        None => Cow::Borrowed(tool_name.name.as_str()),
-    }
-}
-
 pub(crate) fn tool_user_shell_type(
     user_shell: &crate::shell::Shell,
 ) -> codex_tools::ToolUserShellType {

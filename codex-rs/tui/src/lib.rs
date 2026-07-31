@@ -1222,7 +1222,7 @@ pub async fn run_main(
                 ));
             }
         };
-        ensure_oss_provider_ready(provider_id, &config).await?;
+        ensure_oss_provider_ready(provider_id, &mut config).await?;
     }
 
     let otel_logger_layer = otel.as_ref().and_then(|o| o.logger_layer());

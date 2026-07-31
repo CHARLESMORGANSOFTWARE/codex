@@ -16,7 +16,7 @@ pub fn get_default_model_for_oss_provider(provider_id: &str) -> Option<&'static 
 /// Ensures the specified OSS provider is ready (models downloaded, service reachable).
 pub async fn ensure_oss_provider_ready(
     provider_id: &str,
-    config: &Config,
+    config: &mut Config,
 ) -> Result<(), std::io::Error> {
     match provider_id {
         LMSTUDIO_OSS_PROVIDER_ID => {
@@ -29,6 +29,7 @@ pub async fn ensure_oss_provider_ready(
             codex_ollama::ensure_oss_ready(config)
                 .await
                 .map_err(|e| std::io::Error::other(format!("OSS setup failed: {e}")))?;
+            codex_ollama::refresh_model_catalog(config).await?;
         }
         _ => {
             // Unknown provider, skip setup

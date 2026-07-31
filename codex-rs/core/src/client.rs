@@ -157,7 +157,6 @@ const X_OPENAI_INTERNAL_CODEX_RESPONSES_LITE_HEADER: &str =
     "x-openai-internal-codex-responses-lite";
 const RESPONSES_ENDPOINT: &str = "/responses";
 const RESPONSES_COMPACT_ENDPOINT: &str = "/responses/compact";
-const REQUIRED_FIRST_TOOL_MARKER_PREFIX: &str = "[codex-required-first-tool:";
 // `/responses/compact` is unary, so the timeout covers the full response rather than one idle
 // period between stream events.
 const COMPACT_REQUEST_TIMEOUT_IDLE_MULTIPLIER: u32 = 4;
@@ -177,51 +176,6 @@ fn reasoning_effort_for_request(effort: ReasoningEffortConfig) -> ReasoningEffor
         ReasoningEffortConfig::Ultra => ReasoningEffortConfig::Max,
         effort => effort,
     }
-}
-
-fn required_first_tool_name(input: &[ResponseItem]) -> Option<String> {
-    let (message_index, text) = input.iter().enumerate().rev().find_map(|(index, item)| {
-        let ResponseItem::Message { role, content, .. } = item else {
-            return None;
-        };
-        if role != "user" {
-            return None;
-        }
-        let text = content.iter().find_map(|content_item| {
-            let ContentItem::InputText { text } = content_item else {
-                return None;
-            };
-            text.contains(REQUIRED_FIRST_TOOL_MARKER_PREFIX)
-                .then_some(text.as_str())
-        })?;
-        Some((index, text))
-    })?;
-
-    let tool_output_received = input[message_index + 1..].iter().any(|item| {
-        matches!(
-            item,
-            ResponseItem::FunctionCallOutput { .. }
-                | ResponseItem::CustomToolCallOutput { .. }
-                | ResponseItem::ToolSearchOutput { .. }
-        )
-    });
-    if tool_output_received {
-        return None;
-    }
-
-    let marker_start =
-        text.find(REQUIRED_FIRST_TOOL_MARKER_PREFIX)? + REQUIRED_FIRST_TOOL_MARKER_PREFIX.len();
-    let remainder = &text[marker_start..];
-    let marker_end = remainder.find(']')?;
-    let tool_name = remainder[..marker_end].trim();
-    if tool_name.is_empty()
-        || !tool_name.chars().all(|character| {
-            character.is_ascii_alphanumeric() || matches!(character, '_' | '-' | '.')
-        })
-    {
-        return None;
-    }
-    Some(tool_name.to_string())
 }
 
 fn session_telemetry_for_request(
@@ -889,27 +843,7 @@ impl ModelClient {
                 .iter_mut()
                 .for_each(ResponseItem::clear_internal_chat_message_metadata_passthrough);
         }
-        let required_first_tool = (!is_openai)
-            .then(|| required_first_tool_name(&input))
-            .flatten();
-        let selected_tools;
-        let tools_for_request = if let Some(tool_name) = required_first_tool.as_deref() {
-            selected_tools = prompt
-                .tools
-                .iter()
-                .filter(|tool| tool.name() == tool_name)
-                .cloned()
-                .collect::<Vec<_>>();
-            if selected_tools.is_empty() {
-                return Err(CodexErr::InvalidRequest(format!(
-                    "required first tool is unavailable: {tool_name}"
-                )));
-            }
-            &selected_tools
-        } else {
-            &prompt.tools
-        };
-        let tools = create_tools_json_for_responses_api(tools_for_request)?;
+        let tools = create_tools_json_for_responses_api(&prompt.tools)?;
         let (instructions, tools) = if model_info.use_responses_lite {
             let mut prefix = vec![ResponseItem::AdditionalTools {
                 id: None,
@@ -965,11 +899,7 @@ impl ModelClient {
             instructions,
             input,
             tools,
-            tool_choice: if required_first_tool.is_some() {
-                "required".to_string()
-            } else {
-                "auto".to_string()
-            },
+            tool_choice: "auto".to_string(),
             parallel_tool_calls: prompt.parallel_tool_calls && !model_info.use_responses_lite,
             reasoning,
             store: provider.is_azure_responses_endpoint(),

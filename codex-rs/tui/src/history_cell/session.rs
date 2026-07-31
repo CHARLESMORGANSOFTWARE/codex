@@ -332,12 +332,16 @@ impl HistoryCell for SessionHeaderHistoryCell {
 
         let make_row = |spans: Vec<Span<'static>>| Line::from(spans);
 
-        // Title line rendered inside the box: ">_ OpenAI Codex (vX)"
+        // Product identity and engine attribution rendered inside the box.
         let title_spans: Vec<Span<'static>> = vec![
             Span::from(">_ ").dim(),
-            Span::from("OpenAI Codex").bold(),
+            Span::from("Telethryve").bold(),
             Span::from(" ").dim(),
             Span::from(format!("(v{})", self.version)).dim(),
+        ];
+        let attribution_spans: Vec<Span<'static>> = vec![
+            Span::from("   ").dim(),
+            Span::from("Powered by Codex").dim(),
         ];
 
         const CHANGE_MODEL_HINT_COMMAND: &str = "/model";
@@ -384,6 +388,7 @@ impl HistoryCell for SessionHeaderHistoryCell {
 
         let mut lines = vec![
             make_row(title_spans),
+            make_row(attribution_spans),
             make_row(Vec::new()),
             make_row(model_spans),
             make_row(dir_spans),
@@ -402,7 +407,8 @@ impl HistoryCell for SessionHeaderHistoryCell {
 
     fn raw_lines(&self) -> Vec<Line<'static>> {
         let mut lines = vec![
-            Line::from(format!("OpenAI Codex (v{})", self.version)),
+            Line::from(format!("Telethryve (v{})", self.version)),
+            Line::from("Powered by Codex"),
             Line::from(format!(
                 "model: {}{}",
                 self.model,

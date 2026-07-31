@@ -2,6 +2,7 @@ use futures::StreamExt;
 use futures::stream::BoxStream;
 use semver::Version;
 use serde_json::Value as JsonValue;
+use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::io;
 
@@ -18,8 +19,14 @@ use codex_model_provider_info::OLLAMA_OSS_PROVIDER_ID;
 use codex_model_provider_info::WireApi;
 #[cfg(test)]
 use codex_model_provider_info::create_oss_provider_with_base_url;
+use codex_protocol::openai_models::ModelsResponse;
 
 const OLLAMA_CONNECTION_ERROR: &str = "No running Ollama server detected. Start it with: `ollama serve` (after installing). Install instructions: https://github.com/ollama/ollama?tab=readme-ov-file#ollama";
+const RELEASE_MODEL_ALIAS: &str = "gemma4-codex-tight:latest";
+const RELEASE_MODEL_CONTEXT_WINDOW: i64 = 16_384;
+const CONSERVATIVE_CONTEXT_WINDOW: i64 = 8_192;
+const MAX_CATALOG_MODELS: usize = 128;
+const MAX_MODEL_NAME_LEN: usize = 256;
 
 /// Client for interacting with a local Ollama instance.
 pub struct OllamaClient {
@@ -124,6 +131,53 @@ impl OllamaClient {
             })
             .unwrap_or_default();
         Ok(names)
+    }
+
+    /// Build the Codex model catalog from Ollama's installed completion models.
+    pub async fn fetch_model_catalog(&self) -> io::Result<ModelsResponse> {
+        let tags_url = format!("{}/api/tags", self.host_root.trim_end_matches('/'));
+        let resp = self
+            .client
+            .get(tags_url)
+            .send()
+            .await
+            .map_err(io::Error::other)?;
+        if !resp.status().is_success() {
+            return Err(io::Error::other(format!(
+                "failed to read Ollama model inventory: HTTP {}",
+                resp.status()
+            )));
+        }
+        let tags = resp.json::<JsonValue>().await.map_err(io::Error::other)?;
+        let mut shows = HashMap::new();
+        if let Some(models) = tags.get("models").and_then(JsonValue::as_array) {
+            for item in models.iter().take(MAX_CATALOG_MODELS) {
+                let Some(name) = item
+                    .get("name")
+                    .or_else(|| item.get("model"))
+                    .and_then(JsonValue::as_str)
+                    .map(str::trim)
+                    .filter(|name| !name.is_empty() && name.len() <= MAX_MODEL_NAME_LEN)
+                else {
+                    continue;
+                };
+                let show_url = format!("{}/api/show", self.host_root.trim_end_matches('/'));
+                let metadata = match self
+                    .client
+                    .post(show_url)
+                    .json(&serde_json::json!({"model": name}))
+                    .send()
+                    .await
+                {
+                    Ok(response) if response.status().is_success() => {
+                        response.json::<JsonValue>().await.unwrap_or_default()
+                    }
+                    _ => JsonValue::default(),
+                };
+                shows.insert(name.to_string(), metadata);
+            }
+        }
+        build_model_catalog(&tags, &shows)
     }
 
     /// Query the server for its version string, returning `None` when unavailable.
@@ -259,11 +313,246 @@ impl OllamaClient {
     }
 }
 
+fn configured_context_window(name: &str, metadata: &JsonValue, details: &JsonValue) -> i64 {
+    if let Some(parameters) = metadata.get("parameters").and_then(JsonValue::as_str) {
+        for line in parameters.lines() {
+            let mut fields = line.split_whitespace();
+            if fields.next() == Some("num_ctx")
+                && let Some(value) = fields.next().and_then(|value| value.parse::<i64>().ok())
+                && (1_024..=1_000_000).contains(&value)
+            {
+                return value;
+            }
+        }
+    }
+    if let Some(model_info) = metadata.get("model_info").and_then(JsonValue::as_object) {
+        for (key, value) in model_info {
+            if key.ends_with(".context_length")
+                && let Some(value) = value.as_i64()
+                && (1_024..=1_000_000).contains(&value)
+            {
+                return value;
+            }
+        }
+    }
+    if let Some(value) = details.get("context_length").and_then(JsonValue::as_i64)
+        && (1_024..=1_000_000).contains(&value)
+    {
+        return value;
+    }
+    if name == RELEASE_MODEL_ALIAS {
+        RELEASE_MODEL_CONTEXT_WINDOW
+    } else {
+        CONSERVATIVE_CONTEXT_WINDOW
+    }
+}
+
+fn build_model_catalog(
+    tags: &JsonValue,
+    shows: &HashMap<String, JsonValue>,
+) -> io::Result<ModelsResponse> {
+    let items = tags
+        .get("models")
+        .and_then(JsonValue::as_array)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "Ollama tags has no models"))?;
+    let mut models = Vec::new();
+    for item in items.iter().take(MAX_CATALOG_MODELS) {
+        let Some(name) = item
+            .get("name")
+            .or_else(|| item.get("model"))
+            .and_then(JsonValue::as_str)
+            .map(str::trim)
+            .filter(|name| !name.is_empty() && name.len() <= MAX_MODEL_NAME_LEN)
+        else {
+            continue;
+        };
+        if models
+            .iter()
+            .any(|model: &codex_protocol::openai_models::ModelInfo| model.slug == name)
+        {
+            continue;
+        }
+        let metadata = shows.get(name).cloned().unwrap_or_default();
+        let capabilities = metadata
+            .get("capabilities")
+            .and_then(JsonValue::as_array)
+            .map(|values| {
+                values
+                    .iter()
+                    .filter_map(JsonValue::as_str)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        if !capabilities.is_empty() && !capabilities.contains(&"completion") {
+            continue;
+        }
+        let details = item.get("details").cloned().unwrap_or_default();
+        let family = details
+            .get("family")
+            .and_then(JsonValue::as_str)
+            .unwrap_or_default();
+        let parameter_size = details
+            .get("parameter_size")
+            .and_then(JsonValue::as_str)
+            .unwrap_or_default();
+        let descriptor = [family, parameter_size]
+            .into_iter()
+            .filter(|value| !value.is_empty())
+            .collect::<Vec<_>>()
+            .join(" · ");
+        let description = if descriptor.is_empty() {
+            "Installed Ollama completion model.".to_string()
+        } else {
+            format!("Installed Ollama completion model ({descriptor}).")
+        };
+        let thinking = capabilities.contains(&"thinking");
+        let vision = capabilities.contains(&"vision");
+        let context_window = configured_context_window(name, &metadata, &details);
+        let priority = if name == RELEASE_MODEL_ALIAS {
+            0
+        } else {
+            i32::try_from(models.len() + 1).unwrap_or(i32::MAX)
+        };
+        let reasoning_levels = if thinking {
+            serde_json::json!([
+                {"effort": "low", "description": "Fast local reasoning"},
+                {"effort": "medium", "description": "Balanced local reasoning"}
+            ])
+        } else {
+            serde_json::json!([
+                {"effort": "none", "description": "No reasoning control"}
+            ])
+        };
+        let model = serde_json::from_value(serde_json::json!({
+            "slug": name,
+            "display_name": name,
+            "description": description,
+            "default_reasoning_level": if thinking { "low" } else { "none" },
+            "supported_reasoning_levels": reasoning_levels,
+            "shell_type": "shell_command",
+            "visibility": "list",
+            "supported_in_api": true,
+            "priority": priority,
+            "additional_speed_tiers": [],
+            "availability_nux": null,
+            "upgrade": null,
+            "base_instructions": "You are Codex using a local Ollama LLM backend. Follow the user's newest request, use Codex tools when needed, and report results accurately.",
+            "supports_reasoning_summaries": false,
+            "default_reasoning_summary": "none",
+            "support_verbosity": false,
+            "default_verbosity": null,
+            "apply_patch_tool_type": "freeform",
+            "web_search_tool_type": "text_and_image",
+            "truncation_policy": {"mode": "tokens", "limit": 9000},
+            "supports_parallel_tool_calls": false,
+            "supports_image_detail_original": vision,
+            "context_window": context_window,
+            "max_context_window": context_window,
+            "effective_context_window_percent": 75,
+            "experimental_supported_tools": [],
+            "input_modalities": if vision {
+                serde_json::json!(["text", "image"])
+            } else {
+                serde_json::json!(["text"])
+            },
+            "supports_search_tool": false
+        }))
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+        models.push(model);
+    }
+    if models.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "Ollama has no installed completion models",
+        ));
+    }
+    Ok(ModelsResponse { models })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use assert_matches::assert_matches;
     use pretty_assertions::assert_eq;
+
+    #[test]
+    fn test_build_model_catalog_uses_live_inventory_and_configured_context() {
+        let tags = serde_json::json!({
+            "models": [
+                {
+                    "name": "qwen3.5:9b",
+                    "details": {"family": "qwen35", "parameter_size": "9.7B"}
+                },
+                {
+                    "name": "gemma4-codex-tight:latest",
+                    "details": {"family": "gemma4", "parameter_size": "8.0B"}
+                },
+                {
+                    "name": "nomic-embed-text:latest",
+                    "details": {"family": "nomic-bert", "parameter_size": "137M"}
+                },
+                {
+                    "name": "uninspected:latest",
+                    "details": {"family": "unknown", "parameter_size": "1B"}
+                }
+            ]
+        });
+        let shows = std::collections::HashMap::from([
+            (
+                "qwen3.5:9b".to_string(),
+                serde_json::json!({
+                    "capabilities": ["completion", "tools", "thinking"],
+                    "model_info": {"qwen35.context_length": 262144}
+                }),
+            ),
+            (
+                "gemma4-codex-tight:latest".to_string(),
+                serde_json::json!({
+                    "capabilities": ["completion", "vision", "tools", "thinking"],
+                    "model_info": {"gemma4.context_length": 131072},
+                    "parameters": "temperature 0.2\nnum_ctx 16384\n"
+                }),
+            ),
+            (
+                "nomic-embed-text:latest".to_string(),
+                serde_json::json!({
+                    "capabilities": ["embedding"],
+                    "model_info": {"nomicbert.context_length": 8192}
+                }),
+            ),
+            ("uninspected:latest".to_string(), serde_json::json!({})),
+        ]);
+
+        let catalog = build_model_catalog(&tags, &shows).expect("catalog");
+        let slugs = catalog
+            .models
+            .iter()
+            .map(|model| model.slug.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            slugs,
+            vec![
+                "qwen3.5:9b",
+                "gemma4-codex-tight:latest",
+                "uninspected:latest",
+            ]
+        );
+        let tuned = catalog
+            .models
+            .iter()
+            .find(|model| model.slug == "gemma4-codex-tight:latest")
+            .expect("tuned model");
+        assert_eq!(tuned.context_window, Some(16384));
+        assert_eq!(tuned.max_context_window, Some(16384));
+        assert_eq!(tuned.priority, 0);
+        assert!(tuned.supported_in_api);
+        let unknown = catalog
+            .models
+            .iter()
+            .find(|model| model.slug == "uninspected:latest")
+            .expect("uninspected model");
+        assert_eq!(unknown.context_window, Some(8192));
+    }
 
     // Happy-path tests using a mock HTTP server; skip if sandbox network is disabled.
     #[tokio::test]

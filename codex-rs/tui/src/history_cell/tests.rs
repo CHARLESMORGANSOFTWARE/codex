@@ -1518,6 +1518,25 @@ fn completed_mcp_tool_call_multiple_outputs_inline_snapshot() {
 }
 
 #[test]
+fn session_header_uses_telethryve_product_identity_and_codex_attribution() {
+    let cell = SessionHeaderHistoryCell::new(
+        "gemma4-codex-tight:latest".to_string(),
+        /*reasoning_effort*/ None,
+        /*show_fast_status*/ false,
+        test_path_buf("/Applications/Telethryve").abs().to_path_buf(),
+        "0.144.0",
+    );
+
+    let rendered = render_lines(&cell.display_lines(/*width*/ 80));
+    assert!(rendered[1].contains("Telethryve (v0.144.0)"));
+    assert!(rendered[2].contains("Powered by Codex"));
+
+    let raw = render_lines(&cell.raw_lines());
+    assert_eq!(raw[0], "Telethryve (v0.144.0)");
+    assert_eq!(raw[1], "Powered by Codex");
+}
+
+#[test]
 fn session_header_includes_reasoning_level_when_present() {
     let cell = SessionHeaderHistoryCell::new(
         "gpt-4o".to_string(),

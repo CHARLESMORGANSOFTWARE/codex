@@ -678,7 +678,7 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
         in_process_start_args,
         state_db,
         command,
-        config,
+        mut config,
         resume_approvals_reviewer_override,
         dangerously_bypass_approvals_and_sandbox,
         exec_span,
@@ -713,7 +713,7 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
                 ));
             }
         };
-        ensure_oss_provider_ready(provider_id, &config)
+        ensure_oss_provider_ready(provider_id, &mut config)
             .await
             .map_err(|e| anyhow::anyhow!("OSS setup failed: {e}"))?;
     }

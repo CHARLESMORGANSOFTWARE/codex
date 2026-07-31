@@ -17,6 +17,8 @@ use codex_utils_output_truncation::approx_token_count;
 
 const DEFAULT_SKILL_METADATA_CHAR_BUDGET: usize = 8_000;
 const SKILL_METADATA_CONTEXT_WINDOW_PERCENT: usize = 2;
+const LOCAL_SKILL_METADATA_CONTEXT_WINDOW_THRESHOLD: usize = 16_384;
+const LOCAL_SKILL_METADATA_TOKEN_BUDGET_FLOOR: usize = 1_024;
 const MAX_DEFAULT_CONTEXT_SKILL_DESCRIPTION_CHARS: usize = 1_024;
 const TRUNCATED_SKILL_DESCRIPTION_SUFFIX: &str = "...";
 const SKILL_DESCRIPTION_TRUNCATION_WARNING_THRESHOLD_CHARS: usize = 100;
@@ -28,6 +30,7 @@ pub const SKILL_DESCRIPTIONS_REMOVED_WARNING_PREFIX: &str =
 pub const SKILLS_INTRO_WITH_ABSOLUTE_PATHS: &str = "A skill is a set of instructions provided through a `SKILL.md` source. Below is the list of skills that can be used. Each entry includes a name, description, and source locator. `file` locators are on the host filesystem, `environment resource` locators are owned by an execution environment, `orchestrator resource` locators are opaque non-filesystem resources, and `custom resource` locators use their provider's access mechanism.";
 const SKILLS_INTRO_WITH_ALIASES: &str = "A skill is a set of local instructions to follow that is stored in a `SKILL.md` file. Below is the list of skills that can be used. Each entry includes a name, description, and a short path that can be expanded into an absolute path using the skill roots table.";
 pub const SKILLS_HOW_TO_USE_WITH_ABSOLUTE_PATHS: &str = r###"- Discovery: The list above is the skills available in this session (name + description + source locator). `file` entries live on the host filesystem, `environment resource` entries are owned by their execution environment, `orchestrator resource` entries must be accessed through `skills.list` and `skills.read`, and `custom resource` entries use their provider's access mechanism.
+- A skill name is not a shell executable. Never run a skill name as a command; read its listed `SKILL.md` using the appropriate source mechanism.
 - Trigger rules: If the user names a skill (with `$SkillName` or plain text) OR the task clearly matches a skill's description shown above, you must use that skill for that turn. Multiple mentions mean use them all. Do not carry skills across turns unless re-mentioned.
 - Missing/blocked: If a named skill isn't in the list or its source can't be read, say so briefly and continue with the best fallback.
 - How to use a skill (progressive disclosure):
@@ -45,6 +48,7 @@ pub const SKILLS_HOW_TO_USE_WITH_ABSOLUTE_PATHS: &str = r###"- Discovery: The li
   - When variants exist (frameworks, providers, domains), pick only the relevant reference file(s) and note that choice.
 - Safety and fallback: If a skill can't be applied cleanly (missing files, unclear instructions), state the issue, pick the next-best approach, and continue."###;
 pub const SKILLS_HOW_TO_USE_WITH_ALIASES: &str = r###"- Discovery: The list above is the skills available in this session (name + description + short path). Skill bodies live on disk at the listed paths after expanding the matching alias from `### Skill roots`.
+- A skill name is not a shell executable. Never run a skill name as a command; expand its path and read the listed `SKILL.md`.
 - Trigger rules: If the user names a skill (with `$SkillName` or plain text) OR the task clearly matches a skill's description shown above, you must use that skill for that turn. Multiple mentions mean use them all. Do not carry skills across turns unless re-mentioned.
 - Missing/blocked: If a named skill isn't in the list or the path can't be read, say so briefly and continue with the best fallback.
 - How to use a skill (progressive disclosure):
@@ -140,11 +144,16 @@ pub fn default_skill_metadata_budget(context_window: Option<i64>) -> SkillMetada
         .and_then(|window| usize::try_from(window).ok())
         .filter(|window| *window > 0)
         .map(|window| {
+            let proportional = window
+                .saturating_mul(SKILL_METADATA_CONTEXT_WINDOW_PERCENT)
+                .saturating_div(100)
+                .max(1);
             SkillMetadataBudget::Tokens(
-                window
-                    .saturating_mul(SKILL_METADATA_CONTEXT_WINDOW_PERCENT)
-                    .saturating_div(100)
-                    .max(1),
+                if window >= LOCAL_SKILL_METADATA_CONTEXT_WINDOW_THRESHOLD {
+                    proportional.max(LOCAL_SKILL_METADATA_TOKEN_BUDGET_FLOOR)
+                } else {
+                    proportional
+                },
             )
         })
         .unwrap_or(SkillMetadataBudget::Characters(
@@ -1019,6 +1028,7 @@ mod tests {
                 "Progressive disclosure applies to selecting relevant files, not partially reading a selected instruction file"
             ));
             assert!(!instructions.contains("Read only enough to follow the workflow"));
+            assert!(instructions.contains("A skill name is not a shell executable"));
         }
     }
 
@@ -1031,6 +1041,10 @@ mod tests {
         assert_eq!(
             default_skill_metadata_budget(Some(99)),
             SkillMetadataBudget::Tokens(1)
+        );
+        assert_eq!(
+            default_skill_metadata_budget(Some(16_384)),
+            SkillMetadataBudget::Tokens(1_024)
         );
     }
 

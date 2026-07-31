@@ -1,9 +1,10 @@
 ---
-source: tui/src/history_cell.rs
+source: tui/src/history_cell/tests.rs
 expression: rendered
 ---
 ╭───────────────────────────────────────╮
-│ >_ OpenAI Codex (vtest)               │
+│ >_ Telethryve (vtest)                 │
+│    Powered by Codex                   │
 │                                       │
 │ model:       gpt-5   /model to change │
 │ directory:   /tmp/project             │

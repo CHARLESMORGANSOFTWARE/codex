@@ -3653,6 +3653,7 @@ dependencies = [
  "bytes",
  "codex-core",
  "codex-model-provider-info",
+ "codex-protocol",
  "futures",
  "memchr",
  "pretty_assertions",

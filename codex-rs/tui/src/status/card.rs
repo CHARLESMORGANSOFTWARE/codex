@@ -710,9 +710,13 @@ impl HistoryCell for StatusHistoryCell {
         let mut lines: Vec<Line<'static>> = Vec::new();
         lines.push(Line::from(vec![
             Span::from(format!("{}>_ ", FieldFormatter::INDENT)).dim(),
-            Span::from("OpenAI Codex").bold(),
+            Span::from("Telethryve").bold(),
             Span::from(" ").dim(),
             Span::from(format!("(v{CODEX_CLI_VERSION})")).dim(),
+        ]));
+        lines.push(Line::from(vec![
+            Span::from(format!("{}   ", FieldFormatter::INDENT)).dim(),
+            Span::from("Powered by Codex").dim(),
         ]));
 
         let available_inner_width = usize::from(width.saturating_sub(4));

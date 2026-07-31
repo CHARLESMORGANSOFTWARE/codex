@@ -9,11 +9,13 @@ const ANNOUNCEMENT_TIP_URL: &str =
 const IS_MACOS: bool = cfg!(target_os = "macos");
 const IS_WINDOWS: bool = cfg!(target_os = "windows");
 
-const APP_TOOLTIP: &str = "Try the **Codex App**. Run 'codex app' or visit https://chatgpt.com/codex?app-landing-page=true";
+const TELETHRYVE_TOOLTIP: &str = "**Telethryve** — Powered by Codex.";
+
+const APP_TOOLTIP: &str = TELETHRYVE_TOOLTIP;
 const FAST_TOOLTIP: &str =
     "*New* Use **/fast** to enable our fastest inference with increased plan usage.";
-const OTHER_TOOLTIP: &str = "*New* Build faster with the **Codex App**. Run 'codex app' or visit https://chatgpt.com/codex?app-landing-page=true";
-const OTHER_TOOLTIP_NON_MAC: &str = "*New* Build faster with Codex.";
+const OTHER_TOOLTIP: &str = TELETHRYVE_TOOLTIP;
+const OTHER_TOOLTIP_NON_MAC: &str = TELETHRYVE_TOOLTIP;
 const FREE_GO_TOOLTIP: &str =
     "*New* For a limited time, Codex is included in your plan for free – let’s build together.";
 
@@ -328,6 +330,13 @@ mod tests {
     use crate::tooltips::announcement::parse_announcement_tip_toml;
     use rand::SeedableRng;
     use rand::rngs::StdRng;
+
+    #[test]
+    fn app_promotion_slots_use_telethryve_product_identity() {
+        assert_eq!(APP_TOOLTIP, TELETHRYVE_TOOLTIP);
+        assert_eq!(OTHER_TOOLTIP, TELETHRYVE_TOOLTIP);
+        assert_eq!(OTHER_TOOLTIP_NON_MAC, TELETHRYVE_TOOLTIP);
+    }
 
     #[test]
     fn random_tooltip_returns_some_tip_when_available() {

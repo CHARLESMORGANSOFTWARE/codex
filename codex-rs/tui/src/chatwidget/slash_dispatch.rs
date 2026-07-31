@@ -939,13 +939,14 @@ impl ChatWidget {
         let Some(command) =
             find_slash_command(name, self.builtin_command_flags(), &service_tier_commands)
         else {
-            self.add_info_message(
-                format!(
-                    r#"Unrecognized command '/{name}'. Type "/" for a list of supported commands."#
-                ),
-                /*hint*/ None,
-            );
-            return QueueDrain::Continue;
+            self.submit_user_message(UserMessage {
+                text,
+                local_images,
+                remote_image_urls,
+                text_elements,
+                mention_bindings,
+            });
+            return QueueDrain::Stop;
         };
 
         if rest.is_empty() {

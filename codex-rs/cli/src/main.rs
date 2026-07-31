@@ -40,7 +40,9 @@ use owo_colors::OwoColorize;
 use std::collections::HashSet;
 use std::io::IsTerminal;
 use std::io::Write;
+use std::path::Path;
 use std::path::PathBuf;
+use std::process::Command as ProcessCommand;
 use std::sync::Arc;
 use supports_color::Stream;
 
@@ -965,13 +967,23 @@ async fn cli_main(
     arg0_paths: Arg0DispatchPaths,
     remote_control_disabled: bool,
 ) -> anyhow::Result<()> {
+    let parsed_cli = MultitoolCli::parse();
+    if should_bootstrap_telethryve_terminal(
+        &parsed_cli,
+        std::env::var("TELETHRYVE_TERMINAL_BOOTSTRAPPED")
+            .ok()
+            .as_deref(),
+    ) {
+        let status = run_telethryve_terminal_bootstrap()?;
+        std::process::exit(status);
+    }
     let MultitoolCli {
         config_overrides: mut root_config_overrides,
         feature_toggles,
         remote,
         mut interactive,
         subcommand,
-    } = MultitoolCli::parse();
+    } = parsed_cli;
 
     // Fold --enable/--disable into config overrides so they flow to all subcommands.
     let toggle_overrides = feature_toggles.to_overrides()?;
@@ -1647,6 +1659,59 @@ async fn cli_main(
 
     Ok(())
 }
+fn should_bootstrap_telethryve_terminal(cli: &MultitoolCli, bootstrap_guard: Option<&str>) -> bool {
+    bootstrap_guard != Some("1")
+        && cli.subcommand.is_none()
+        && cli.interactive.oss
+        && cli.interactive.oss_provider.as_deref() == Some("ollama")
+}
+
+fn find_telethryve_root(executable: &Path) -> Option<PathBuf> {
+    executable.ancestors().find_map(|ancestor| {
+        let launcher = ancestor.join("telethryve_terminal.py");
+        let mcp_server = ancestor.join("telethryve_control_mcp.py");
+        (launcher.is_file() && mcp_server.is_file()).then(|| ancestor.to_path_buf())
+    })
+}
+
+fn telethryve_terminal_bootstrap_command<I, S>(
+    executable: &Path,
+    root: &Path,
+    args: I,
+) -> ProcessCommand
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<std::ffi::OsStr>,
+{
+    let mut command = ProcessCommand::new("/usr/bin/env");
+    command
+        .arg("python3")
+        .arg(root.join("telethryve_terminal.py"))
+        .arg("--native-bootstrap")
+        .arg("--")
+        .args(args)
+        .env("TELETHRYVE_TERMINAL_BOOTSTRAPPED", "1")
+        .env("TELETHRYVE_CODEX_BIN", executable);
+    command
+}
+
+fn run_telethryve_terminal_bootstrap() -> anyhow::Result<i32> {
+    let executable = std::env::current_exe()?;
+    let root = find_telethryve_root(&executable).ok_or_else(|| {
+        anyhow::anyhow!(
+            "bundled Telethryve Terminal bootstrap files were not found beside {}",
+            executable.display()
+        )
+    })?;
+    let mut command = telethryve_terminal_bootstrap_command(
+        &executable,
+        &root,
+        std::env::args_os().skip(1),
+    );
+    let status = command.status()?;
+    Ok(status.code().unwrap_or(1))
+}
+
 
 fn profile_v2_for_subcommand<'a>(
     interactive: &'a TuiCli,
@@ -1674,7 +1739,6 @@ fn profile_v2_for_subcommand<'a>(
         ),
     }
 }
-
 /// App-server uses the shared interactive CLI flags for backwards-compatible
 /// parsing, but starts its own configuration loader. Carry the explicit OSS
 /// provider into that loader so `codex --oss --local-provider ollama
@@ -1697,6 +1761,7 @@ fn append_app_server_oss_override(
         .push(format!("model_provider = {provider:?}"));
     Ok(())
 }
+
 
 async fn run_exec_server_command(
     cmd: ExecServerCommand,
@@ -2547,6 +2612,62 @@ mod tests {
         assert_eq!(
             config_overrides.raw_overrides,
             vec![r#"model_provider = "ollama""#.to_string()]
+        );
+    }
+
+    #[test]
+    fn direct_interactive_ollama_uses_telethryve_bootstrap_only_once() {
+        let cli = MultitoolCli::try_parse_from([
+            "codex",
+            "--oss",
+            "--local-provider",
+            "ollama",
+            "-m",
+            "gemma4-codex-tight:latest",
+        ])
+        .expect("parse direct interactive Ollama");
+
+        assert!(should_bootstrap_telethryve_terminal(&cli, None));
+        assert!(!should_bootstrap_telethryve_terminal(&cli, Some("1")));
+
+        let app_server = MultitoolCli::try_parse_from([
+            "codex",
+            "--oss",
+            "--local-provider",
+            "ollama",
+            "app-server",
+        ])
+        .expect("parse app server");
+        assert!(!should_bootstrap_telethryve_terminal(&app_server, None));
+    }
+
+    #[test]
+    fn telethryve_bootstrap_command_preserves_the_callers_working_directory() {
+        let executable = PathBuf::from(
+            "/Applications/Telethryve/vendor/codex/codex-rs/target/release/codex",
+        );
+        let root = PathBuf::from("/Applications/Telethryve");
+        let command = telethryve_terminal_bootstrap_command(
+            &executable,
+            &root,
+            [
+                "--oss",
+                "--local-provider",
+                "ollama",
+                "-m",
+                "gemma4-codex-tight:latest",
+            ],
+        );
+
+        assert_eq!(command.get_current_dir(), None);
+        assert_eq!(
+            command.get_program(),
+            std::ffi::OsStr::new("/usr/bin/env")
+        );
+        assert!(
+            command
+                .get_args()
+                .any(|arg| arg == root.join("telethryve_terminal.py"))
         );
     }
 

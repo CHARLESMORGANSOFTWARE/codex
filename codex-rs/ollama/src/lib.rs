@@ -49,6 +49,13 @@ pub async fn ensure_oss_ready(config: &Config) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Refresh Codex metadata from the exact live Ollama completion-model inventory.
+pub async fn refresh_model_catalog(config: &mut Config) -> std::io::Result<()> {
+    let ollama_client = crate::OllamaClient::try_from_oss_provider(config).await?;
+    config.model_catalog = Some(ollama_client.fetch_model_catalog().await?);
+    Ok(())
+}
+
 fn min_responses_version() -> Version {
     Version::new(0, 13, 4)
 }

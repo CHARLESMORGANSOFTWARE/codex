@@ -244,8 +244,6 @@ use self::popup_state::ActivePopup;
 use self::popup_state::DismissedToken;
 use self::popup_state::PopupState;
 use self::slash_input::SlashInput;
-use self::slash_input::SlashValidation;
-use self::slash_input::SubmissionValidation;
 use crate::app_event::AppEvent;
 use crate::app_event::ConnectorsSnapshot;
 use crate::app_event_sender::AppEventSender;
@@ -2677,7 +2675,6 @@ impl ChatComposer {
     ) -> Option<(String, Vec<TextElement>)> {
         self.prepare_submission_text_with_options(
             record_history,
-            SlashValidation::Immediate,
             PendingPasteHandling::Expand,
         )
     }
@@ -2685,7 +2682,6 @@ impl ChatComposer {
     fn prepare_submission_text_with_options(
         &mut self,
         record_history: bool,
-        slash_validation: SlashValidation,
         pending_paste_handling: PendingPasteHandling,
     ) -> Option<(String, Vec<TextElement>)> {
         let mut text = self.current_text();
@@ -2695,7 +2691,6 @@ impl ChatComposer {
         let original_local_image_paths = self.attachments.local_image_paths();
         let original_pending_pastes = self.draft.pending_pastes.clone();
         let mut text_elements = original_text_elements.clone();
-        let input_starts_with_space = original_input.starts_with(' ');
         self.draft.recent_submission_mention_bindings.clear();
         self.draft.textarea.set_text_clearing_elements("");
         self.draft.is_bash_mode = false;
@@ -2715,30 +2710,6 @@ impl ChatComposer {
         // If there is neither text nor attachments, suppress submission entirely.
         text = text.trim().to_string();
         text_elements = Self::trim_text_elements(&expanded_input, &text, text_elements);
-
-        if slash_validation == SlashValidation::Immediate
-            && let SubmissionValidation::UnknownCommand(name) = self
-                .slash_input()
-                .validate_submission(&text, input_starts_with_space)
-        {
-            let message = format!(
-                r#"Unrecognized command '/{name}'. Type "/" for a list of supported commands."#
-            );
-            self.app_event_tx.send(AppEvent::InsertHistoryCell(Box::new(
-                history_cell::new_info_event(message, /*hint*/ None),
-            )));
-            self.set_text_content_with_mention_bindings(
-                original_input.clone(),
-                original_text_elements,
-                original_local_image_paths,
-                original_mention_bindings,
-            );
-            self.draft
-                .pending_pastes
-                .clone_from(&original_pending_pastes);
-            self.draft.textarea.set_cursor(original_input.len());
-            return None;
-        }
 
         let actual_chars = text.chars().count();
         if actual_chars > MAX_USER_INPUT_TEXT_CHARS {
@@ -2825,11 +2796,6 @@ impl ChatComposer {
             };
             if let Some((text, text_elements)) = self.prepare_submission_text_with_options(
                 /*record_history*/ true,
-                if defer_slash_validation {
-                    SlashValidation::Deferred
-                } else {
-                    SlashValidation::Immediate
-                },
                 if preserve_pending_pastes {
                     PendingPasteHandling::Preserve
                 } else {

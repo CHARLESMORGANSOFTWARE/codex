@@ -316,7 +316,6 @@ mod tests {
             websocket_connect_timeout_ms: None,
             requires_openai_auth: false,
             supports_websockets: true,
-            namespace_tools: None,
         }
     }
 }
